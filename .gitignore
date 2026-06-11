@@ -1,0 +1,57 @@
+# Node.js
+node_modules/
+frontend/node_modules/
+
+# Environment
+.env
+
+# Build outputs
+dist/
+build/
+.next/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv/
+env/
+.venv/
+backend/venv/
+backend/.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Python packaging
+*.egg-info/
+
+# Databases
+*.db
+*.sqlite3
+
+# Uploads
+uploads/
+
+# Vite cache
+.vite/
+frontend/node_modules/.vite/
