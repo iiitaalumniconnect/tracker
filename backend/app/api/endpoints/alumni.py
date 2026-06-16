@@ -342,6 +342,8 @@ def export_alumni(
                                     ws.cell(row=r, column=col_map['new_higher_edu']).fill = yellow_fill
                                     has_changes = True
                                     
+                            # Scan to see if any cell in the row is highlighted in yellow (excluding the flag cell itself)
+                            has_highlight = False
                             for c in range(1, ws.max_column + 1):
                                 if c == col_map['flag']:
                                     continue
@@ -349,12 +351,14 @@ def export_alumni(
                                 fill = cell.fill
                                 if fill and fill.fill_type and fill.fill_type != 'none':
                                     color = fill.start_color.rgb if fill.start_color else None
-                                    if color and color not in ('00000000', '00FFFFFF', 'FFFFFFFF'):
-                                        has_changes = True
-                                        break
+                                    if color:
+                                        color_str = str(color).upper()
+                                        if color_str in ('FFFF00', '00FFFF00', 'FFFFFF00', 'FFFFFFFF00') or color_str.endswith('FFFF00'):
+                                            has_highlight = True
+                                            break
                                         
                             flag_cell = ws.cell(row=r, column=col_map['flag'])
-                            if has_changes:
+                            if has_highlight:
                                 flag_cell.value = "True"
                                 flag_cell.alignment = center_alignment
                             else:
@@ -585,13 +589,20 @@ def export_alumni(
         changed_col_idx = base_col_len + len(dynamic_colors) + 1
         ws.cell(row=current_row, column=changed_col_idx).alignment = center_alignment
         
-    stream = io.BytesIO()
-    wb.save(stream)
-    stream.seek(0)
-    
-    response = StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    response.headers["Content-Disposition"] = "attachment; filename=Alumni_Updates.xlsx"
-    return response
+    try:
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+        
+        response = StreamingResponse(stream, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        response.headers["Content-Disposition"] = "attachment; filename=Alumni_Updates.xlsx"
+        return response
+    except Exception as e:
+        logger.error(f"Error creating Excel export: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create export file: {str(e)}"
+        )
 
 from fastapi import Request
 from app.core.limiter import limiter

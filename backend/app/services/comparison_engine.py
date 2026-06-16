@@ -43,13 +43,30 @@ class ComparisonEngine:
         - spaces
         - case differences
         - None values
+        - JSON formatting differences
         """
         if value is None:
             return ""
 
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, sort_keys=True)
+        if isinstance(value, str):
+            # Strip whitespace and convert to lowercase for string comparison
+            value = value.strip()
+            if not value or value.lower() in ('none', 'null', 'nan', ''):
+                return ""
+            return value.lower()
 
+        if isinstance(value, (dict, list)):
+            # For complex types, serialize with sorted keys and separators for consistency
+            try:
+                return json.dumps(value, sort_keys=True, separators=(',', ':'), default=str)
+            except (TypeError, ValueError):
+                return str(value).strip().lower()
+
+        if isinstance(value, (int, float, bool)):
+            # Convert numbers and booleans to string consistently
+            return str(value).strip().lower()
+        
+        # Fallback for any other type
         return str(value).strip().lower()
 
     def compare_and_update(
