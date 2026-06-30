@@ -171,29 +171,83 @@ const HistoryList = () => {
     }
   };
 
-  const handleDownloadTracked = async (uploadId?: number) => {
-    try {
-      const url = uploadId 
-        ? `/alumni/export?upload_id=${uploadId}`
-        : '/alumni/export';
+  // const handleDownloadTracked = async (uploadId?: number) => {
+  //   try {
+  //     const url = uploadId 
+  //       ? `/alumni/export?upload_id=${uploadId}`
+  //       : '/alumni/export';
       
-      const response = await api.get(url, {
-        responseType: 'blob'
-      });
+  //     const response = await api.get(url, {
+  //       responseType: 'blob'
+  //     });
       
-      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.setAttribute('download', `Alumni_Tracked_${new Date().toISOString().split('T')[0]}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode?.removeChild(link);
-    } catch (err) {
-      alert("Failed to download tracked profiles");
-      console.error(err);
-    }
-  };
+  //     const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+  //     const link = document.createElement('a');
+  //     link.href = blobUrl;
+  //     link.setAttribute('download', `Alumni_Tracked_${new Date().toISOString().split('T')[0]}.xlsx`);
+  //     document.body.appendChild(link);
+  //     link.click();
+  //     link.parentNode?.removeChild(link);
+  //   } catch (err) {
+  //     alert("Failed to download tracked profiles");
+  //     console.error(err);
+  //   }
+  // };
+const handleDownloadTracked = async (uploadId?: number) => {
+    let timer: ReturnType<typeof setInterval> | undefined;
 
+    try {
+        const url = uploadId
+            ? `/alumni/export?upload_id=${uploadId}`
+            : "/alumni/export";
+
+        console.log("Starting download...");
+
+        let seconds = 0;
+
+        timer = setInterval(() => {
+            seconds++;
+
+            console.clear();
+
+            const progress = Math.min(seconds * 2, 90);
+
+            console.log("Preparing Excel...");
+            console.log(`Progress: ${progress}%`);
+            console.log(`Elapsed: ${seconds} sec`);
+        }, 1000);
+
+        const response = await api.get(url, {
+            responseType: "blob",
+        });
+
+        if (timer) clearInterval(timer);
+
+        console.clear();
+        console.log("Progress: 100%");
+        console.log("Download ready.");
+
+        const blobUrl = window.URL.createObjectURL(
+            new Blob([response.data])
+        );
+
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = `Alumni_Tracked_${new Date().toISOString().split("T")[0]}.xlsx`;
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        window.URL.revokeObjectURL(blobUrl);
+
+    } catch (err) {
+
+        if (timer) clearInterval(timer);
+
+        console.error(err);
+    }
+};
   const handleDownloadOriginal = async (id: number, filename: string) => {
     try {
         const response = await api.get(`/upload/download-original/${id}`, {

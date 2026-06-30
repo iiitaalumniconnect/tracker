@@ -10,6 +10,13 @@ from app.services import alumni_service
 from app.schemas.core_schemas import AlumniCreate, UploadedFileSchema
 from app.models.core_models import UploadedFile, UploadAlumni
 from app.api.endpoints import alumni
+from datetime import datetime, date
+import math
+import openpyxl
+from openpyxl.styles import PatternFill
+from app.models import core_models
+import io
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -17,9 +24,43 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-def process_csv_background(file_path: str, record_id: int):
-    db = SessionLocal()
+def json_safe(value):
+    import math
+    import pandas as pd
+    from datetime import datetime, date
 
+    # Handle datetime/date
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return value.isoformat()
+
+    # Handle NaN
+    if pd.isna(value):
+        return ""
+
+    # Handle numpy types
+    try:
+        import numpy as np
+
+        if isinstance(value, np.integer):
+            return int(value)
+
+        if isinstance(value, np.floating):
+            if math.isnan(value):
+                return ""
+            return float(value)
+
+        if isinstance(value, np.bool_):
+            return bool(value)
+    except Exception:
+        pass
+
+    return value
+
+
+def process_csv_background(file_path: str, record_id: int):
+    print("===== Background Task Started =====")
+
+    db = SessionLocal()
     try:
         if file_path.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(file_path)
@@ -64,12 +105,13 @@ def process_csv_background(file_path: str, record_id: int):
             if "linkedin_url" in row_dict:
                 del row_dict["linkedin_url"]
 
-            import math
+            # Debug: identify any datetime values in the Excel row
+            for key, value in row_dict.items():
+                if isinstance(value, (datetime, date, pd.Timestamp)):
+                    print(f"[DEBUG] Datetime found -> {key}: {value}")
 
-            extra_data = {
-                k: (v if not (isinstance(v, float) and math.isnan(v)) else "")
-                for k, v in row_dict.items()
-            }
+            # Convert every value to something JSON-safe
+            extra_data = {k: json_safe(v) for k, v in row_dict.items()}
 
             if not existing:
                 # Start with empty education - will be populated by API
@@ -142,7 +184,7 @@ def process_csv_background(file_path: str, record_id: int):
                     db.commit()
 
                 imported_count += 1
-
+        print("Imported Count:", imported_count)
         record = db.query(UploadedFile).filter(UploadedFile.id == record_id).first()
 
         if record:
@@ -194,6 +236,67 @@ def process_csv_background(file_path: str, record_id: int):
         db.close()
 
 
+# @router.post("/upload-csv")
+# async def upload_csv(
+#     background_tasks: BackgroundTasks,
+#     file: UploadFile = File(...),
+#     db: Session = Depends(get_db),
+# ):
+#     if not file.filename.endswith((".csv", ".xlsx", ".xls")):
+#         raise HTTPException(status_code=400, detail="File must be a CSV or Excel file")
+
+#     contents = await file.read()
+#     try:
+#         if file.filename.endswith((".xlsx", ".xls")):
+#             df = pd.read_excel(io.BytesIO(contents))
+#         else:
+#             df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+#         print("=" * 60)
+#         print("UPLOAD API")
+#         print("Filename:", file.filename)
+#         print("Rows received:", len(df))
+#         print("=" * 60)
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
+
+#     if len(df) > 1000:
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"File exceeds the maximum limit of 1000 rows. You provided {len(df)} rows.",
+#         )
+
+#     required_cols = ["linkedin_url"]
+#     for col in required_cols:
+#         if col not in df.columns:
+#             raise HTTPException(
+#                 status_code=400, detail=f"Missing required column: {col}"
+#             )
+
+#     # Create uploaded file record
+#     uploaded_record = UploadedFile(
+#         filename=file.filename,
+#         status="processing",
+#         record_count=0,  # Will update when finished
+#     )
+#     db.add(uploaded_record)
+#     db.commit()
+#     db.refresh(uploaded_record)
+
+#     # Save file to disk
+#     file_path = os.path.join(UPLOAD_DIR, f"{uploaded_record.id}_{file.filename}")
+#     with open(file_path, "wb") as f:
+#         f.write(contents)
+#     print("Saved file at:", file_path)
+
+#     # Trigger background task
+#     background_tasks.add_task(process_csv_background, file_path, uploaded_record.id)
+
+#     return {
+#         "message": f"Upload accepted. Processing {len(df)} records in the background.",
+#         "file_id": uploaded_record.id,
+#     }
+
+
 @router.post("/upload-csv")
 async def upload_csv(
     background_tasks: BackgroundTasks,
@@ -201,16 +304,51 @@ async def upload_csv(
     db: Session = Depends(get_db),
 ):
     if not file.filename.endswith((".csv", ".xlsx", ".xls")):
-        raise HTTPException(status_code=400, detail="File must be a CSV or Excel file")
+        raise HTTPException(
+            status_code=400,
+            detail="File must be a CSV or Excel file",
+        )
 
     contents = await file.read()
+
     try:
         if file.filename.endswith((".xlsx", ".xls")):
             df = pd.read_excel(io.BytesIO(contents))
         else:
             df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+
+        print("=" * 80)
+        print("UPLOAD API")
+        print("Filename:", file.filename)
+        print("Rows received:", len(df))
+        print("Columns:", df.columns.tolist())
+
+        if "Serial number" in df.columns:
+            print("\nLast 20 Serial Numbers:")
+            print(df["Serial number"].tail(20).to_list())
+
+        if "linkedin_url" in df.columns:
+            print("\nNon-empty linkedin_url:", df["linkedin_url"].notna().sum())
+
+            print("Unique linkedin_url:", df["linkedin_url"].nunique())
+
+            dup = df[df.duplicated("linkedin_url", keep=False)]
+
+            print("Duplicate linkedin_url rows:", len(dup))
+
+            if not dup.empty:
+                print(dup[["Serial number", "linkedin_url"]])
+
+        print("\nLast 5 rows:")
+        print(df.tail())
+
+        print("=" * 80)
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error parsing file: {str(e)}",
+        )
 
     if len(df) > 1000:
         raise HTTPException(
@@ -219,29 +357,56 @@ async def upload_csv(
         )
 
     required_cols = ["linkedin_url"]
+
     for col in required_cols:
         if col not in df.columns:
             raise HTTPException(
-                status_code=400, detail=f"Missing required column: {col}"
+                status_code=400,
+                detail=f"Missing required column: {col}",
             )
 
-    # Create uploaded file record
     uploaded_record = UploadedFile(
         filename=file.filename,
         status="processing",
-        record_count=0,  # Will update when finished
+        record_count=0,
     )
+
     db.add(uploaded_record)
     db.commit()
     db.refresh(uploaded_record)
 
-    # Save file to disk
-    file_path = os.path.join(UPLOAD_DIR, f"{uploaded_record.id}_{file.filename}")
+    file_path = os.path.join(
+        UPLOAD_DIR,
+        f"{uploaded_record.id}_{file.filename}",
+    )
+
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    # Trigger background task
-    background_tasks.add_task(process_csv_background, file_path, uploaded_record.id)
+    print("=" * 80)
+    print("FILE SAVED")
+    print("Path:", file_path)
+    print("Size:", os.path.getsize(file_path), "bytes")
+
+    # Read the saved file again
+    if file_path.lower().endswith((".xlsx", ".xls")):
+        saved_df = pd.read_excel(file_path)
+    else:
+        saved_df = pd.read_csv(file_path)
+
+    print("Rows in saved file:", len(saved_df))
+
+    if "Serial number" in saved_df.columns:
+        print("Last 20 Serial Numbers (saved):")
+        print(saved_df["Serial number"].tail(20).to_list())
+
+    print("=" * 80)
+
+    background_tasks.add_task(
+        process_csv_background,
+        file_path,
+        uploaded_record.id,
+    )
 
     return {
         "message": f"Upload accepted. Processing {len(df)} records in the background.",
@@ -480,8 +645,36 @@ def format_field(data, field_type):
     return ""
 
 
+def clean_excel_value(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, (datetime, date)):
+        value = value.isoformat()
+
+    elif isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+
+    else:
+        value = str(value)
+
+    value = ILLEGAL_CHARACTERS_RE.sub("", value)
+
+    return value
+
+
 @router.get("/download/{file_id}")
 def download_upload_history(file_id: int, db: Session = Depends(get_db)):
+    print("Requested file_id:", file_id)
+
+    file_record = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
+
+    print("DB filename:", file_record.filename)
+    print(
+        "Actual path:",
+        os.path.join(UPLOAD_DIR, f"{file_record.id}_{file_record.filename}"),
+    )
+
     file_record = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
     if not file_record:
         raise HTTPException(status_code=404, detail="File history not found")
@@ -492,17 +685,19 @@ def download_upload_history(file_id: int, db: Session = Depends(get_db)):
             status_code=404, detail="Physical file no longer exists on the server"
         )
 
-    import openpyxl
-    from openpyxl.styles import PatternFill
-    from app.models import core_models
-    import io
-    from fastapi.responses import StreamingResponse
-
     try:
         if file_path.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(file_path)
         else:
             df = pd.read_csv(file_path)
+
+        print("=" * 60)
+        print("BACKGROUND TASK")
+        print("Reading file:", file_path)
+        print("Rows read:", len(df))
+        print("Record ID:", record_id)
+        print("=" * 60)
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
@@ -825,7 +1020,8 @@ def download_upload_history(file_id: int, db: Session = Depends(get_db)):
         for col_name in actual_new_cols:
             row_values.append(new_vals_dict[col_name])
 
-        ws.append(row_values)
+        cleaned_row = [clean_excel_value(v) for v in row_values]
+        ws.append(cleaned_row)
 
         current_row = ws.max_row
         start_new_col_idx = len(orig_cols) + 1
@@ -867,18 +1063,87 @@ def download_upload_history(file_id: int, db: Session = Depends(get_db)):
     return response
 
 
+# @router.get("/download-original/{file_id}")
+# def download_original_file(file_id: int, db: Session = Depends(get_db)):
+#     file_record = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
+#     if not file_record:
+#         raise HTTPException(status_code=404, detail="File history not found")
+
+#     file_path = os.path.join(UPLOAD_DIR, f"{file_record.id}_{file_record.filename}")
+#     if not os.path.exists(file_path):
+#         raise HTTPException(
+#             status_code=404, detail="Physical file no longer exists on the server"
+#         )
+
+
+#     return FileResponse(
+#         path=file_path, filename=file_record.filename, media_type="text/csv"
+#     )
 @router.get("/download-original/{file_id}")
 def download_original_file(file_id: int, db: Session = Depends(get_db)):
     file_record = db.query(UploadedFile).filter(UploadedFile.id == file_id).first()
+
     if not file_record:
         raise HTTPException(status_code=404, detail="File history not found")
 
     file_path = os.path.join(UPLOAD_DIR, f"{file_record.id}_{file_record.filename}")
+
     if not os.path.exists(file_path):
         raise HTTPException(
-            status_code=404, detail="Physical file no longer exists on the server"
+            status_code=404,
+            detail="Physical file no longer exists on the server",
         )
 
+    # ---------- DEBUG ----------
+    try:
+        if file_path.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file_path)
+        else:
+            df = pd.read_csv(file_path)
+
+        print("=" * 70)
+        print("DOWNLOAD ORIGINAL")
+        print("File ID:", file_id)
+        print("Filename:", file_record.filename)
+        print("Path:", file_path)
+        print("Rows:", len(df))
+        print("Columns:", df.columns.tolist())
+
+        if "Serial number" in df.columns:
+            print("\nLast 20 Serial Numbers:")
+            print(df["Serial number"].tail(20).to_list())
+
+        if "linkedin_url" in df.columns:
+            print("\nNon-empty linkedin_url:", df["linkedin_url"].notna().sum())
+
+            print("Unique linkedin_url:", df["linkedin_url"].nunique())
+
+            dup = df[df.duplicated("linkedin_url", keep=False)]
+
+            print("Duplicate linkedin_url rows:", len(dup))
+
+            if not dup.empty:
+                print(dup[["Serial number", "linkedin_url"]])
+
+        print("\nExact duplicate rows:", len(df[df.duplicated()]))
+
+        print("\nLast 5 rows:")
+        print(df.tail())
+
+        print("=" * 70)
+
+    except Exception as e:
+        print("DEBUG ERROR:", e)
+    # ---------- END DEBUG ----------
+
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if file_path.lower().endswith((".xlsx", ".xls"))
+        else "text/csv"
+    )
+
     return FileResponse(
-        path=file_path, filename=file_record.filename, media_type="text/csv"
+        path=file_path,
+        filename=file_record.filename,
+        media_type=media_type,
     )
